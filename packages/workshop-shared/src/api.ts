@@ -1923,6 +1923,12 @@ export interface Overseer extends RpcTarget {
                   formats?: MessageFormatRef[]): Promise<void>;
 
   /**
+   * Resolve after the current agent turn, every callback turn it queued, and the bounded automatic
+   * title request have finished. Returns immediately when none of that work is running.
+   */
+  waitForAgentTurn(chatId: number): Promise<void>;
+
+  /**
    * Upload an attachment for use in a future chat message. This way by the time the user wants to
    * send the message, likely uploading is complete. `modelId` determines whether the
    * selected provider can receive a raw file attachment.
@@ -2223,6 +2229,12 @@ export type AiChatMetadata = {
 
   /** Total cost of this conversation so far, in dollars, if known. */
   totalCost?: number;
+
+  /** Tokens used to generate this chat's automatic title, when reported by the provider. */
+  titleTokens?: number;
+
+  /** Cost of generating this chat's automatic title, in dollars, when known. */
+  titleCost?: number;
 
   /**
    * First sequence this chat still replays. Everything before it is covered by a compaction

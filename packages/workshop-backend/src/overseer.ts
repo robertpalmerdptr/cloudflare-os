@@ -227,6 +227,12 @@ type LiveChatContext = {
     resolve: (v: unknown) => void;
     reject: (e: unknown) => void;
   }>;
+
+  // Clients waiting for this agent turn and its queued callback turns to finish.
+  agentTurnWaiters: Set<{ resolve: () => void; reject: (error: Error) => void }>;
+
+  // Automatic model calls that belong to this turn, such as its initial title.
+  auxiliaryTasks: Set<Promise<void>>;
 };
 
 type PreparedChatMessage = {
@@ -1502,6 +1508,8 @@ class OverseerImpl implements AgentHooks {
         cancelController: new AbortController(),
         pendingAgentCallbacks: [],
         activeAgentCallbacks: new Map(),
+        agentTurnWaiters: new Set(),
+        auxiliaryTasks: new Set(),
       };
       this.#liveChats.set(chatId, ctx);
     }
@@ -1524,6 +1532,8 @@ class OverseerImpl implements AgentHooks {
 
     // Reject all queued callbacks.
     for (let cb of ctx.pendingAgentCallbacks) cb.reject(error);
+
+    for (let waiter of ctx.agentTurnWaiters) waiter.reject(error);
 
     this.#liveChats.delete(chatId);
     this.invalidateChatContent(chatId);
@@ -1587,7 +1597,32 @@ class OverseerImpl implements AgentHooks {
       return;
     }
 
+
     this.ctx.storage.deleteAlarm();
+  }
+  waitForAgentTurn(chatId: number): Promise<void> {
+    let liveChat = this.#liveChats.get(chatId);
+    if (this.#agentTurnSettled(chatId, liveChat)) return Promise.resolve();
+    liveChat ??= this.#getLiveChat(chatId);
+    return new Promise<void>((resolve, reject) => {
+      liveChat.agentTurnWaiters.add({resolve, reject});
+    });
+  }
+
+  #resolveAgentTurnWaiters(chatId: number, liveChat: LiveChatContext): void {
+    if (!this.#agentTurnSettled(chatId, liveChat)) return;
+    for (let waiter of liveChat.agentTurnWaiters) waiter.resolve();
+    liveChat.agentTurnWaiters.clear();
+    this.#liveChats.delete(chatId);
+  }
+
+  #agentTurnSettled(chatId: number, liveChat: LiveChatContext | undefined): boolean {
+    return !this.isPreparingChatMessage(chatId) &&
+      !this.storage.chatMeta.get(chatId)?.activeAgent &&
+      (!liveChat ||
+       (liveChat.pendingAgentCallbacks.length === 0 &&
+        liveChat.activeAgentCallbacks.size === 0 &&
+        liveChat.auxiliaryTasks.size === 0));
   }
 
   #deleteExternalMessageResponseDeliveryRecord(record: ExternalMessageRecord): void {
@@ -4229,8 +4264,9 @@ class OverseerImpl implements AgentHooks {
         let meta = this.storage.chatMeta.get(chatId);
         let liveChat = this.#liveChats.get(chatId);
         if (liveChat?.pendingAgentCallbacks.length && !meta?.activeAgent) {
-          this.#startAgentForCallbacks(meta, liveChat);
+          this.#startAgentForCallbacks(chatId, meta, liveChat);
         }
+        if (liveChat) this.#resolveAgentTurnWaiters(chatId, liveChat);
       },
     };
   }
@@ -5239,7 +5275,14 @@ class OverseerImpl implements AgentHooks {
       let titleMessage = prepared.message?.trim() || prepared.slashCommand?.args.trim() ||
         prepared.skillName || (prepared.slashCommand ? "Slash command" : "") ||
         `[user attached ${canonicalAttachments?.length ?? 0} attachment(s)]`;
-      this.generateThreadTitle(chatId, titleMessage, userMeta.quickModel, userMeta.profile);
+      let titleTask = this.generateThreadTitle(
+          chatId, titleMessage, userMeta.quickModel, userMeta.profile);
+      let liveChat = this.#getLiveChat(chatId);
+      liveChat.auxiliaryTasks.add(titleTask);
+      this.ctx.waitUntil(titleTask.finally(() => {
+        liveChat.auxiliaryTasks.delete(titleTask);
+        this.#resolveAgentTurnWaiters(chatId, liveChat);
+      }));
     }
 
     this.recordGadgetAnalytics({
@@ -5850,12 +5893,11 @@ class OverseerImpl implements AgentHooks {
 
       // If any new messages were queued waiting for the agent to finish, deliver them now.
       if (liveChat.pendingAgentCallbacks.length > 0) {
-        this.#startAgentForCallbacks(meta, liveChat);
+        this.#startAgentForCallbacks(chatId, meta, liveChat);
       } else {
         this.#deliverWaitingExternalMessageResponse(chatId);
 
-        // LiveChatContext is now empty.
-        this.#liveChats.delete(chatId);
+        this.#resolveAgentTurnWaiters(chatId, liveChat);
       }
     }
   }
@@ -5937,7 +5979,7 @@ class OverseerImpl implements AgentHooks {
     // If the agent is running, we can't just add messages now since it'll confuse the agent, but
     // once the agent finishes it will see the pending callbacks and start another turn.
     if (!meta.activeAgent && !this.isPreparingChatMessage(chatId)) {
-      this.#startAgentForCallbacks(meta, liveChat);
+      this.#startAgentForCallbacks(chatId, meta, liveChat);
     }
 
     return promise;
@@ -5945,7 +5987,7 @@ class OverseerImpl implements AgentHooks {
 
   // Deliver one or more agent callbacks: append messages, start agent, wait for returns.
   async #startAgentForCallbacks(
-      meta: AiChatMetadata | undefined, liveChat: LiveChatContext): Promise<void> {
+      chatId: number, meta: AiChatMetadata | undefined, liveChat: LiveChatContext): Promise<void> {
     let callbacks = liveChat.pendingAgentCallbacks;
 
     try {
@@ -5957,7 +5999,6 @@ class OverseerImpl implements AgentHooks {
 
       if (!meta) throw new Error("Chat thread was deleted before callback was handled.");
 
-      let chatId = meta.id;
 
       // Resolve the AI model based on the initiator of the first message. This means this
       // turn gets charged to the first initiator, even if it ends up handling multiple messages.
@@ -6045,6 +6086,10 @@ class OverseerImpl implements AgentHooks {
       liveChat.pendingAgentCallbacks = [];
       for (let cb of callbacks) {
         cb.reject(err);
+      }
+      let failedMeta = this.storage.chatMeta.get(chatId);
+      if (!failedMeta?.activeAgent) {
+        this.#resolveAgentTurnWaiters(chatId, liveChat);
       }
     }
   }
@@ -6940,6 +6985,14 @@ class OverseerImpl implements AgentHooks {
                 "\n" +
                 "========== user message below this line ==========\n" +
                 `${initialMessage}`,
+        signal: AbortSignal.timeout(10_000),
+        onUsage: usage => {
+          let usageMeta = this.storage.chatMeta.get(chatId);
+          if (!usageMeta) return;
+          usageMeta.titleTokens = (usageMeta.titleTokens ?? 0) + usage.totalTokens;
+          usageMeta.titleCost = (usageMeta.titleCost ?? 0) + usage.cost.total;
+          this.storage.chatMeta.put(usageMeta);
+        },
       });
 
       let meta = this.storage.chatMeta.get(chatId);
@@ -10124,6 +10177,10 @@ class OverseerClientInterface extends RpcTarget implements Overseer {
     this.impl.cancelAgent(chatId);
   }
 
+  async waitForAgentTurn(chatId: number): Promise<void> {
+    await this.impl.waitForAgentTurn(chatId);
+  }
+
   async retryAgent(chatId: number, modelId: string): Promise<void> {
     let userMeta = await retryOnDoReset(
         () => this.#clientUser.getChatContext(modelId), this.impl.logger);
@@ -10640,6 +10697,7 @@ class UseOverseerInterface extends RpcTarget implements Overseer {
   async discardChatDraftChanges(_chatId: number): Promise<void> { this.#deny(); }
   async deleteChat(_chatId: number): Promise<void> { this.#deny(); }
   async stopAgent(_chatId: number): Promise<void> { this.#deny(); }
+  async waitForAgentTurn(_chatId: number): Promise<void> { this.#deny(); }
   async retryAgent(_chatId: number, _modelId: string): Promise<void> { this.#deny(); }
   async subscribeToConsoleLogs(_subscriber: RpcStub<ConsoleLogSubscriber>): Promise<RpcStub<{}>> {
     // Inert: "use" sessions never receive console logs. The inbound subscriber stub is left

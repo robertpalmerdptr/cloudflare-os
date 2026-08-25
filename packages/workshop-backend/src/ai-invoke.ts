@@ -56,6 +56,8 @@ export async function completeText(handle: ModelHandle, args: {
   messages?: Message[];
   maxTokens?: number;
   signal?: AbortSignal;
+  /** Receives provider usage for the one-shot request, including failed responses. */
+  onUsage?: (usage: Usage) => void;
 }): Promise<string> {
   const messages: Message[] = args.messages ??
       [{ role: "user", content: args.prompt ?? "", timestamp: Date.now() }];
@@ -68,6 +70,7 @@ export async function completeText(handle: ModelHandle, args: {
     thinking: false,
   });
   const message = await stream.result();
+  args.onUsage?.(message.usage);
   if (message.stopReason === "error" || message.stopReason === "aborted") {
     // Surface a cancellation as the abort reason, like a directly-aborted request would.
     args.signal?.throwIfAborted();
