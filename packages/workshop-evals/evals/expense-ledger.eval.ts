@@ -79,11 +79,10 @@ const task = defineEvalTask({
   turns: [{
     prompt: `Build a Gadget named exactly "Ledger" for tracking shared household expenses between
 flatmates and working out who owes whom. I want to add an expense, see everyone's running balance,
-and get a short list of payments that settles us up. Make it comfortable on a phone, since I'll be
-adding expenses while standing in a shop.
+and get a short list of payments that settles us up.
 
-All money is integer cents — never floating point. Store everything in the Gadget's own storage so
-nothing is lost when the server restarts.
+Store all money as integer cents. Never use floating point. Keep everything in the Gadget's own
+storage so nothing is lost when the server restarts.
 
 It also needs a stable server RPC taking and returning plain data, so I can verify it:
 
@@ -163,11 +162,14 @@ It also needs a stable server RPC taking and returning plain data, so I can veri
           }),
         ];
         const balances = BalancesSchema.parse(await api.balances());
+        const expectedPeople = ["sum-ana", "sum-ben", "sum-cy", "sum-dee"];
+        const missingPeople = expectedPeople.filter(personId => net(balances, personId) === null);
         const total = balances.perPerson.reduce((sum, entry) => sum + entry.netCents, 0);
         return {
-          pass: added.every(result => OkSchema.parse(result).ok) && total === 0 &&
+          pass: added.every(result => OkSchema.parse(result).ok) &&
+            missingPeople.length === 0 && total === 0 &&
             balances.perPerson.every(entry => Number.isInteger(entry.netCents)),
-          evidence: { total, perPerson: balances.perPerson },
+          evidence: { total, missingPeople, perPerson: balances.perPerson },
         };
       });
 
@@ -176,6 +178,8 @@ It also needs a stable server RPC taking and returning plain data, so I can veri
         const balances = BalancesSchema.parse(await api.balances());
         const settlement = SettlementSchema.parse(await api.settlement());
         const remaining = new Map(balances.perPerson.map(entry => [entry.personId, entry.netCents]));
+        const knownEndpoints = settlement.transfers.every(
+            transfer => remaining.has(transfer.fromId) && remaining.has(transfer.toId));
         for (const transfer of settlement.transfers) {
           remaining.set(transfer.fromId, (remaining.get(transfer.fromId) ?? 0) + transfer.amountCents);
           remaining.set(transfer.toId, (remaining.get(transfer.toId) ?? 0) - transfer.amountCents);
@@ -183,12 +187,14 @@ It also needs a stable server RPC taking and returning plain data, so I can veri
         const owing = balances.perPerson.filter(entry => entry.netCents !== 0).length;
         const unsettled = [...remaining].filter(([, value]) => value !== 0);
         return {
-          pass: unsettled.length === 0 &&
-            settlement.transfers.length <= Math.max(0, owing - 1) &&
+          pass: owing >= 2 && settlement.transfers.length >= 1 && knownEndpoints &&
+            unsettled.length === 0 &&
+            settlement.transfers.length <= owing - 1 &&
             settlement.transfers.every(transfer => transfer.fromId !== transfer.toId),
           evidence: {
             transfers: settlement.transfers.length,
             owing,
+            knownEndpoints,
             unsettled: Object.fromEntries(unsettled),
           },
         };
@@ -278,8 +284,7 @@ It also needs a stable server RPC taking and returning plain data, so I can veri
   remainingCents are null when no budget is set. remainingCents is limitCents - spentCents and is
   allowed to go negative.
 
-Everything that already worked must keep working, including the expenses I have already recorded.
-Show the category breakdown in the UI too.`,
+Everything that already worked must keep working, including the expenses I have already recorded.`,
     verify: async verifier => {
       // The agent's first write in this turn restarts the Gadget's server, discarding memory but
       // not storage. Anything recorded in turn one that is missing now was never really persisted.

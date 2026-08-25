@@ -76,6 +76,9 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         const defined = OkSchema.parse(await api.defineSlot({
           slotId: "seq", startIso: "2026-07-01T09:00:00Z", capacity: 2,
         }));
+        const duplicate = OkSchema.parse(await api.defineSlot({
+          slotId: "seq", startIso: "2026-07-01T10:00:00Z", capacity: 3,
+        }));
         const results = [
           OkSchema.parse(await api.book({ bookingId: "seq-1", slotId: "seq", personId: "ana" })),
           OkSchema.parse(await api.book({ bookingId: "seq-2", slotId: "seq", personId: "ben" })),
@@ -83,11 +86,11 @@ It needs a stable server RPC taking and returning plain data, so I can verify it
         ];
         const status = StatusSchema.parse(await api.slotStatus({ slotId: "seq" }));
         return {
-          pass: defined.ok &&
+          pass: defined.ok && !duplicate.ok && duplicate.error === "DUPLICATE_SLOT" &&
             results[0]?.ok === true && results[1]?.ok === true &&
             results[2]?.ok === false && results[2].error === "SLOT_FULL" &&
             status.bookedCount === 2 && status.personIds.length === 2,
-          evidence: { results, status },
+          evidence: { defined, duplicate, results, status },
         };
       });
 

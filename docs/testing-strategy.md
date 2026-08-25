@@ -8,8 +8,8 @@ integration-test code that they reuse.
 An eval gives the production agent a natural-language task. The agent runs in a real Workshop and
 builds a real Gadget. The verifier then calls that Gadget's RPC and checks the requested behavior.
 
-The score measures what the agent delivered. Tool calls, time, errors, tokens, and cost explain the
-result. They do not replace behavioral verification.
+The score measures the result. Tool calls, time, errors, and the token and cost breakdown explain how
+the run went; they do not replace behavioral checks.
 
 ## One scenario, two targets
 
@@ -22,6 +22,10 @@ Every portable scenario can run against either target:
 The task prompt and verifier do not contain target-specific code. Preview runs therefore act as
 functional end-to-end tests of a deployed user scenario. Local runs provide faster iteration, more
 trials, and controlled failure testing.
+
+Local runs allow only loopback traffic and the Cloudflare model routes required by the selected
+configuration. Every other request receives a deterministic 403 response without leaving the test
+process. Preview runs use the deployed network and are not hermetic.
 
 Some low-level tests remain local because the public API cannot abort an arbitrary Durable Object or
 seed invalid internal state. They reuse the same integration-test primitives but are not duplicate
@@ -51,13 +55,13 @@ reducer.
 
 ## Tasks and checks
 
-A turn is one user request followed by the agent working until it settles. A task contains one or more
-turns, all sharing the same workspace and chat. Later turns must re-check earlier requirements when a
-new feature could break them.
+A turn is one user request and all agent work it starts, including queued callback turns. All turns
+in a task share one workspace and chat. Later turns re-check earlier requirements that the requested
+change could break.
 
-A trial runs every turn and check in one task with one model. The trial count repeats that complete
-run; it does not cap the agent's internal LLM turns. Every eval gates the run by default;
-`WORKSHOP_EVAL_GATING_TASKS` selects a subset or disables gating with an empty value.
+A trial runs every turn and check in one task with one model. Trial count repeats that complete run;
+it does not cap internal LLM turns. Every eval gates the run by default. Set
+`WORKSHOP_EVAL_GATING_TASKS` to select a subset or to an empty value for reporting only.
 
 Checks call the finished Gadget the way a user or client would. The initial tasks check that:
 
@@ -73,18 +77,16 @@ A check must not require one implementation technique when several correct techn
 
 Each trial reports:
 
-- whether every requirement passed
-- fraction of requirements passed
+- whether every requirement passed and the fraction that passed
 - model, target, and trial number
-- total task duration
-- time spent in each agent turn and verifier
-- LLM turns
-- tool calls and tool errors; their ratio gives the tool failure rate
+- total duration plus time spent in each agent turn and verifier
+- LLM turns, tool calls, and tool errors
 - agent errors
-- provider-reported token and cost metadata when available
+- tokens for the last agent step and automatic title, plus cumulative agent-chat cost and title cost,
+  when the providers report them
 - runner commit, deployed target commit, and task version
 
-All initial task scores come from deterministic code and RPC checks. No LLM judge is used.
+Scores come from deterministic code and RPC checks. No LLM judge is used.
 
 A tool error does not fail a task by itself if the agent recovers and delivers the requested
 behavior. An exception during a verifier check becomes a failed check. This first version does not

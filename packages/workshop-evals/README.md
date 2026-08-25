@@ -6,9 +6,9 @@ through the Gadget's real RPC.
 The package uses the workerd and Cap'n Web helpers from `@gadgets/integration-tests`. `vitest-evals`
 owns transcript normalization, scoring, reports, traces, and CI result reduction.
 
-Live cases stay under `evals/**/*.eval.ts`. The package's cached `test` task includes only
-`src/**/*.test.ts`, so `pnpm test` never runs a model. The root `pnpm evals` script builds first, then
-invokes the live package script directly; model credentials do not pass through a cached Vite+ task.
+Eval definitions live in `evals/**/*.eval.ts`. Unit tests live in `src/**/*.test.ts`, so `pnpm test`
+never calls a model. `pnpm evals` builds the repository and then runs the live evals without Vite+
+task caching, which would strip the model credentials.
 
 ## Run locally
 
@@ -29,7 +29,7 @@ export CLOUDFLARE_API_TOKEN=...
 pnpm evals
 ```
 
-Optional controls:
+You can change the models, number of trials, and gating tasks:
 
 ```sh
 export WORKSHOP_EVAL_MODELS='@cf/zai-org/glm-5.2,@cf/moonshotai/kimi-k2.7-code'
@@ -45,10 +45,10 @@ A **trial** is one complete run of one eval with one model. `WORKSHOP_EVAL_TRIAL
 model-and-eval pair three times. With three evals and two models, that produces 18 trials. The manual
 workflow exposes the same value as its `trials` input.
 
-A **turn** is one user request followed by the agent working until it settles. Every turn in an eval
-uses the same chat and workspace. A two-turn eval builds something, verifies it, sends a follow-up
-request, then verifies the changed result. The number of internal LLM turns and tool calls is not
-fixed; the report records what the agent used.
+A **turn** is one user request and all agent work it starts, including queued callback turns. Every
+turn in an eval uses the same chat and workspace. A two-turn eval builds something, verifies it,
+sends a follow-up request, and verifies the changed result. The report records the LLM turns and tool
+calls the agent needed; the eval does not prescribe either count.
 
 ## Run against a preview
 
@@ -60,8 +60,8 @@ export CF_ACCESS_TOKEN=...
 pnpm evals
 ```
 
-The preview supplies its own model catalog and Workers AI binding. The runner does not need separate
-model credentials in this mode. The same task prompts and verifiers run locally and on the preview.
+The preview supplies its model catalog and Workers AI binding. The runner uses the same prompts and
+checks as a local run, but only local workerd runs can block network access outside the model routes.
 
 The target commit defaults to the current checkout. Set `WORKSHOP_EVAL_TARGET_COMMIT` to the deployed
 40-character Git SHA when the preview came from another revision.
@@ -76,18 +76,17 @@ pnpm evals:ui
 
 For each trial, the report shows:
 
-- how many task requirements passed, plus pass rate across repeated trials
-- total task duration and the time spent in each agent turn and verifier
-- LLM turns, tool calls, and tool errors; a report can derive the failure rate from the two counts
-- agent errors and provider errors present in the transcript
-- provider-reported tokens and cost when available
+- requirements passed and pass rate across repeated trials
+- total duration, agent time, and verification time
+- LLM turns, tool calls, and tool errors
+- agent and provider errors from the transcript
+- tokens for the last agent step and automatic title, plus cumulative agent-chat cost and title cost,
+  when the providers report them
 - model, local or preview target, and trial number
 - runner commit, target commit, and task version
 
-`taskVersion` is a SHA-256 hash of the prompts. Verifier and gating-policy changes remain attributable
-through the runner commit without changing the task version.
-
-The current tasks use deterministic code and RPC checks. They do not use an LLM judge.
+`taskVersion` is a SHA-256 hash of the prompts. The runner commit identifies verifier and gating
+changes without changing the task version. Scores come from code and RPC checks, not an LLM judge.
 
 ## CI
 
@@ -98,11 +97,33 @@ publish one combined report.
 
 ## Add a scenario
 
-Add `evals/<name>.eval.ts`. Define the prompt and RPC verifier with `defineEvalTask()`, then register
-the task with `defineTaskEval()`. Keep the scenario in one file.
+You can define an eval by adding `evals/<name>.eval.ts`. The API is:
 
-Whether a failed eval gates the run is configuration, not part of the task. Use
-`WORKSHOP_EVAL_GATING_TASKS` locally or the manual workflow's **gatingTasks** input.
+```ts
+type EvalTask = {
+  id: string;
+  turns: readonly [EvalTurn, ...EvalTurn[]];
+};
 
-Verify user-visible behavior and stable RPC contracts without requiring one implementation
-technique. Multi-turn tasks should re-check earlier behavior after each extension.
+type EvalTurn = {
+  prompt: string;
+  verify(verifier: EvalVerifier): Promise<void>;
+};
+
+type EvalCheckOutcome = {
+  pass: boolean;
+  evidence?: unknown;
+};
+```
+
+Call `defineEvalTask()` with the prompt and checks, then pass the result to `defineTaskEval()`. The
+task ID must use lowercase words separated by hyphens, and prompts cannot be empty. Both errors are
+reported before a model runs.
+
+Inside `verify()`, use `verifier.connect<YourRpcType>("Exact Gadget Title")` and
+`verifier.check("stable-check-id", async () => ({ pass, evidence }))`. Check the result a user asked
+for, not which tools or implementation technique the agent chose. A later turn should re-check any
+earlier behavior its requested change could break.
+
+Every eval fails `pnpm evals` by default. `WORKSHOP_EVAL_GATING_TASKS` can select a subset or make an
+explicit reporting-only run.
