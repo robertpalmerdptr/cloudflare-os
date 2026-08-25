@@ -58,6 +58,7 @@ jobs:
           WORKSHOP_EVAL_COMMIT: ${{ github.sha }}
         run: |
           pnpm exec vitest run --config vitest.eval.config.ts \
+            --reporter=default \
             --shard=${{ matrix.shard }}/3 \
             --reporter=vitest-evals/reporter \
             --reporter=json \
