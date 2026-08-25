@@ -1,6 +1,11 @@
 import { execFileSync } from "node:child_process";
 
 const DEFAULT_MODELS = ["@cf/zai-org/glm-5.2", "@cf/moonshotai/kimi-k2.7-code"];
+const DEFAULT_GATING_TASKS = ["appointment-desk", "expense-ledger"];
+
+function commaList(value: string): string[] {
+  return value.split(",").map(item => item.trim()).filter(Boolean);
+}
 
 /** Time reserved for non-agent work inside a run and for cleanup outside it. */
 export const EVAL_OVERHEAD_BUDGET_MS = 2 * 60_000;
@@ -38,12 +43,18 @@ export function resolveEvalCommits(
 /** Code and task identities attached to every eval result. */
 export type EvalIdentity = ReturnType<typeof resolveEvalCommits> & { taskVersion: string };
 
+/** Task IDs whose failed checks should fail this run; an empty override makes the run exploratory. */
+export function evalGatingTasks(environment: NodeJS.ProcessEnv = process.env): ReadonlySet<string> {
+  const configured = environment.WORKSHOP_EVAL_GATING_TASKS;
+  const taskIds = configured === undefined || configured.trim() === "default"
+    ? DEFAULT_GATING_TASKS
+    : commaList(configured);
+  return new Set(taskIds);
+}
+
 /** Parse non-secret eval controls. Model credentials belong to the selected target. */
 export function evalMatrix(environment: NodeJS.ProcessEnv = process.env) {
-  const models = (environment.WORKSHOP_EVAL_MODELS ?? "")
-    .split(",")
-    .map(model => model.trim())
-    .filter(Boolean);
+  const models = commaList(environment.WORKSHOP_EVAL_MODELS ?? "");
   const rawTrials = environment.WORKSHOP_EVAL_TRIALS?.trim();
   const trials = rawTrials === undefined || rawTrials === "" ? 1 : Number(rawTrials);
   if (!Number.isInteger(trials) || trials < 1) {

@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import {
-  EVAL_RUN_BUDGET_MS, EVAL_TEST_TIMEOUT_MS, evalMatrix, resolveEvalCommits,
+  EVAL_RUN_BUDGET_MS, EVAL_TEST_TIMEOUT_MS, evalGatingTasks, evalMatrix, resolveEvalCommits,
 } from "./config.js";
 import { taskVersion, type EvalTask } from "./task.js";
 
@@ -20,6 +20,13 @@ it("accepts model and trial overrides", () => {
     WORKSHOP_EVAL_MODELS: " model-a, model-b ",
     WORKSHOP_EVAL_TRIALS: "3",
   })).toEqual({ models: ["model-a", "model-b"], trials: 3 });
+});
+
+it("selects gating tasks from run configuration", () => {
+  expect([...evalGatingTasks({})]).toEqual(["appointment-desk", "expense-ledger"]);
+  expect([...evalGatingTasks({ WORKSHOP_EVAL_GATING_TASKS: "project-doc, appointment-desk" })])
+    .toEqual(["project-doc", "appointment-desk"]);
+  expect([...evalGatingTasks({ WORKSHOP_EVAL_GATING_TASKS: "" })]).toEqual([]);
 });
 
 it("rejects an invalid trial count", () => {
@@ -46,10 +53,9 @@ it("rejects malformed commit identities", () => {
     .toThrow("40-character Git SHA");
 });
 
-it("versions only the task inputs and expectation", () => {
+it("versions only the task prompts", () => {
   const task: EvalTask = {
     id: "one",
-    expectation: "required",
     turns: [{ prompt: "Build it", verify: () => Promise.resolve() }],
   };
   const version = taskVersion(task);
@@ -60,5 +66,4 @@ it("versions only the task inputs and expectation", () => {
   })).toBe(version);
   expect(taskVersion({ ...task, turns: [{ ...task.turns[0], prompt: "Build it better" }] }))
     .not.toBe(version);
-  expect(taskVersion({ ...task, expectation: "frontier" })).not.toBe(version);
 });

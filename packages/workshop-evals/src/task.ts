@@ -25,7 +25,6 @@ export type EvalTurn = {
 /** A real Workshop task run through the production agent. */
 export type EvalTask = {
   id: string;
-  expectation: "required" | "frontier";
   turns: readonly [EvalTurn, ...EvalTurn[]];
 };
 
@@ -40,10 +39,9 @@ export function defineEvalTask(task: EvalTask): EvalTask {
   return task;
 }
 
-/** Derive taskVersion from prompts and expectation; verifier code belongs to the runner commit. */
+/** Derive taskVersion from prompts; verifier code and run policy belong to the runner commit. */
 export function taskVersion(task: EvalTask): string {
-  const input = { expectation: task.expectation, prompts: task.turns.map(turn => turn.prompt) };
-  return createHash("sha256").update(JSON.stringify(input)).digest("hex");
+  return createHash("sha256").update(JSON.stringify(task.turns.map(turn => turn.prompt))).digest("hex");
 }
 
 /** One model repetition of an authored task. */

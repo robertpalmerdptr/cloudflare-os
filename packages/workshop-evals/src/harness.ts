@@ -10,7 +10,7 @@ import { EvalVerifier } from "./verifier.js";
 
 /** Adapt one real Workshop task to the generic vitest-evals harness contract. */
 export function createWorkshopHarness(
-    task: EvalTask, target: WorkshopTarget, identity: EvalIdentity) {
+    task: EvalTask, target: WorkshopTarget, identity: EvalIdentity, gatesRun: boolean) {
   return createHarness<EvalRunInput, EvalRunOutput>({
     name: "workshop-agent",
     run: async ({ input, signal }) => {
@@ -59,7 +59,7 @@ export function createWorkshopHarness(
           message.type === "error" ? [{ name: "AgentError", message: message.message }] : []),
         metadata: {
           taskId: task.id,
-          expectation: task.expectation,
+          gatesRun,
           target: target.kind,
           ...identity,
         },

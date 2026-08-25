@@ -1,11 +1,12 @@
 import { createJudge, describeEval } from "vitest-evals";
 import { expect } from "vitest";
-import { evalMatrix, resolveEvalCommits } from "./config.js";
+import { evalGatingTasks, evalMatrix, resolveEvalCommits } from "./config.js";
 import { createWorkshopHarness } from "./harness.js";
 import { taskVersion, type EvalRunInput, type EvalRunOutput, type EvalTask } from "./task.js";
 import { resolveWorkshopTarget } from "./target.js";
 
 const evalCommits = resolveEvalCommits();
+const gatingTasks = evalGatingTasks();
 
 const ChecksJudge = createJudge<EvalRunInput, EvalRunOutput>(
   "behavioral checks",
@@ -33,17 +34,18 @@ export function defineTaskEval(task: EvalTask): void {
       model,
       trial,
     })));
+  const gatesRun = gatingTasks.has(task.id);
   const identity = {
     ...evalCommits,
     taskVersion: taskVersion(task),
   };
-  const harness = createWorkshopHarness(task, target, identity);
+  const harness = createWorkshopHarness(task, target, identity, gatesRun);
 
   describeEval(task.id, { harness }, it => {
     it.for(cases)("$name", async ({ model, trial }, { run }) => {
       const result = await run({ model, trial });
       await expect(result).toSatisfyJudge(ChecksJudge, {
-        threshold: task.expectation === "required" ? 1 : null,
+        threshold: gatesRun ? 1 : null,
       });
     });
   });

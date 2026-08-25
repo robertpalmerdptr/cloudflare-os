@@ -44,7 +44,6 @@ function tally(results: readonly z.infer<typeof OkSchema>[]) {
  */
 const task = defineEvalTask({
   id: "appointment-desk",
-  expectation: "required",
   turns: [{
     prompt: `Build a Gadget named exactly "Desk" for booking appointment slots at a small clinic.
 Reception shares the link, so several people book at the same moment from their own phones. A slot

@@ -35,12 +35,11 @@ function text(document: Document): string {
  * real Doc appears on the outputs page and supports the collaborative Docs RPC. A custom notes
  * Gadget lacks both properties.
  *
- * No current-main baseline shows this task passing every check, so it remains frontier. Promote it
- * only after a repeated baseline establishes that result.
+ * No current-main baseline shows this task passing every check, so the default run policy leaves it
+ * non-gating. Add it to the gating set once a repeated baseline establishes that result.
  */
 const task = defineEvalTask({
   id: "project-doc",
-  expectation: "frontier",
   turns: [{
     prompt: `I'm kicking off a project called Harbour Refit. Set me up a doc named exactly
 "${TITLE}" for my running notes on it.

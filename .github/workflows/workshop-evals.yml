@@ -5,6 +5,10 @@ on:
     inputs:
       models:
         description: Comma-separated Workshop model IDs; blank uses the suite defaults
+      gatingTasks:
+        description: Comma-separated eval IDs that should fail the run; default uses suite policy
+        default: "default"
+        required: true
       trials:
         description: Repetitions per task and model
         default: "3"
@@ -50,6 +54,7 @@ jobs:
           CF_AI_GATEWAY_API_TOKEN: ${{ secrets.CF_AI_GATEWAY_TOKEN }}
           WORKSHOP_EVAL_MODELS: ${{ inputs.models }}
           WORKSHOP_EVAL_TRIALS: ${{ inputs.trials }}
+          WORKSHOP_EVAL_GATING_TASKS: ${{ inputs.gatingTasks }}
           WORKSHOP_EVAL_COMMIT: ${{ github.sha }}
         run: |
           pnpm exec vitest run --config vitest.eval.config.ts \

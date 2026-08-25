@@ -51,8 +51,13 @@ reducer.
 
 ## Tasks and checks
 
-A task contains one or more prompts and a verifier. Later turns share the same workspace and chat.
-They must re-check earlier requirements when a new feature could break them.
+A turn is one user request followed by the agent working until it settles. A task contains one or more
+turns, all sharing the same workspace and chat. Later turns must re-check earlier requirements when a
+new feature could break them.
+
+A trial runs every turn and check in one task with one model. The trial count repeats that complete
+run; it does not cap the agent's internal LLM turns. Gating is run policy: the default policy fails
+the run for appointment and ledger check failures, and `WORKSHOP_EVAL_GATING_TASKS` overrides it.
 
 Checks call the finished Gadget the way a user or client would. The initial tasks check that:
 
@@ -87,8 +92,8 @@ classify platform failures separately from the task score.
 
 Repeated trials are required before comparing models or agent changes. Results identify the model,
 runner commit, target commit, `taskVersion`, target, and trial. The task version is a SHA-256 hash of
-the prompts and expectation; verifier changes remain attributable through the runner commit. A model
-comparison holds the agent implementation fixed; an agent comparison holds the model fixed.
+the prompts; verifier and gating-policy changes remain attributable through the runner commit. A
+model comparison holds the agent implementation fixed; an agent comparison holds the model fixed.
 
 ## Running evals
 

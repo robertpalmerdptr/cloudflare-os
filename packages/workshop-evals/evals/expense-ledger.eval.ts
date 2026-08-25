@@ -76,7 +76,6 @@ const TURN_ONE_IDS = ["survive-1", "survive-2"];
  */
 const task = defineEvalTask({
   id: "expense-ledger",
-  expectation: "required",
   turns: [{
     prompt: `Build a Gadget named exactly "Ledger" for tracking shared household expenses between
 flatmates and working out who owes whom. I want to add an expense, see everyone's running balance,

@@ -34,9 +34,21 @@ Optional controls:
 ```sh
 export WORKSHOP_EVAL_MODELS='@cf/zai-org/glm-5.2,@cf/moonshotai/kimi-k2.7-code'
 export WORKSHOP_EVAL_TRIALS=3
+export WORKSHOP_EVAL_GATING_TASKS='appointment-desk,expense-ledger'
 ```
 
-The defaults are both models and one trial.
+The defaults are both models, one trial, and the appointment and ledger evals gating the run. Set
+`WORKSHOP_EVAL_GATING_TASKS` to a comma-separated list to change that policy, or to an empty string
+for a reporting-only run.
+
+A **trial** is one complete run of one eval with one model. `WORKSHOP_EVAL_TRIALS=3` repeats every
+model-and-eval pair three times. With three evals and two models, that produces 18 trials. The manual
+workflow exposes the same value as its `trials` input.
+
+A **turn** is one user request followed by the agent working until it settles. Every turn in an eval
+uses the same chat and workspace. A two-turn eval builds something, verifies it, sends a follow-up
+request, then verifies the changed result. The number of internal LLM turns and tool calls is not
+fixed; the report records what the agent used.
 
 ## Run against a preview
 
@@ -72,7 +84,7 @@ For each trial, the report shows:
 - model, local or preview target, and trial number
 - runner commit, target commit, and task version
 
-`taskVersion` is a SHA-256 hash of the prompts and expectation. Verifier changes remain attributable
+`taskVersion` is a SHA-256 hash of the prompts. Verifier and gating-policy changes remain attributable
 through the runner commit without changing the task version.
 
 The current tasks use deterministic code and RPC checks. They do not use an LLM judge.
@@ -88,6 +100,9 @@ publish one combined report.
 
 Add `evals/<name>.eval.ts`. Define the prompt and RPC verifier with `defineEvalTask()`, then register
 the task with `defineTaskEval()`. Keep the scenario in one file.
+
+Whether a failed eval gates the run is configuration, not part of the task. Use
+`WORKSHOP_EVAL_GATING_TASKS` locally or the manual workflow's **gatingTasks** input.
 
 Verify user-visible behavior and stable RPC contracts without requiring one implementation
 technique. Multi-turn tasks should re-check earlier behavior after each extension.
