@@ -56,8 +56,8 @@ turns, all sharing the same workspace and chat. Later turns must re-check earlie
 new feature could break them.
 
 A trial runs every turn and check in one task with one model. The trial count repeats that complete
-run; it does not cap the agent's internal LLM turns. Gating is run policy: the default policy fails
-the run for appointment and ledger check failures, and `WORKSHOP_EVAL_GATING_TASKS` overrides it.
+run; it does not cap the agent's internal LLM turns. Every eval gates the run by default;
+`WORKSHOP_EVAL_GATING_TASKS` selects a subset or disables gating with an empty value.
 
 Checks call the finished Gadget the way a user or client would. The initial tasks check that:
 

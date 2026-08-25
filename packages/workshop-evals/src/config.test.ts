@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import {
-  EVAL_RUN_BUDGET_MS, EVAL_TEST_TIMEOUT_MS, evalGatingTasks, evalMatrix, resolveEvalCommits,
+  EVAL_RUN_BUDGET_MS, EVAL_TEST_TIMEOUT_MS, evalGatesTask, evalMatrix, resolveEvalCommits,
 } from "./config.js";
 import { taskVersion, type EvalTask } from "./task.js";
 
@@ -22,11 +22,16 @@ it("accepts model and trial overrides", () => {
   })).toEqual({ models: ["model-a", "model-b"], trials: 3 });
 });
 
-it("selects gating tasks from run configuration", () => {
-  expect([...evalGatingTasks({})]).toEqual(["appointment-desk", "expense-ledger"]);
-  expect([...evalGatingTasks({ WORKSHOP_EVAL_GATING_TASKS: "project-doc, appointment-desk" })])
-    .toEqual(["project-doc", "appointment-desk"]);
-  expect([...evalGatingTasks({ WORKSHOP_EVAL_GATING_TASKS: "" })]).toEqual([]);
+it("gates every task by default and allows explicit reporting-only runs", () => {
+  expect(evalGatesTask("project-doc", {})).toBe(true);
+  expect(evalGatesTask("project-doc", { WORKSHOP_EVAL_GATING_TASKS: "all" })).toBe(true);
+  expect(evalGatesTask("project-doc", {
+    WORKSHOP_EVAL_GATING_TASKS: "project-doc, appointment-desk",
+  })).toBe(true);
+  expect(evalGatesTask("expense-ledger", {
+    WORKSHOP_EVAL_GATING_TASKS: "project-doc, appointment-desk",
+  })).toBe(false);
+  expect(evalGatesTask("project-doc", { WORKSHOP_EVAL_GATING_TASKS: "" })).toBe(false);
 });
 
 it("rejects an invalid trial count", () => {

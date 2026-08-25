@@ -1,7 +1,6 @@
 import { execFileSync } from "node:child_process";
 
 const DEFAULT_MODELS = ["@cf/zai-org/glm-5.2", "@cf/moonshotai/kimi-k2.7-code"];
-const DEFAULT_GATING_TASKS = ["appointment-desk", "expense-ledger"];
 
 function commaList(value: string): string[] {
   return value.split(",").map(item => item.trim()).filter(Boolean);
@@ -43,13 +42,12 @@ export function resolveEvalCommits(
 /** Code and task identities attached to every eval result. */
 export type EvalIdentity = ReturnType<typeof resolveEvalCommits> & { taskVersion: string };
 
-/** Task IDs whose failed checks should fail this run; an empty override makes the run exploratory. */
-export function evalGatingTasks(environment: NodeJS.ProcessEnv = process.env): ReadonlySet<string> {
+/** Whether failures in this task should fail the run; an empty override makes it reporting-only. */
+export function evalGatesTask(
+    taskId: string, environment: NodeJS.ProcessEnv = process.env): boolean {
   const configured = environment.WORKSHOP_EVAL_GATING_TASKS;
-  const taskIds = configured === undefined || configured.trim() === "default"
-    ? DEFAULT_GATING_TASKS
-    : commaList(configured);
-  return new Set(taskIds);
+  if (configured === undefined || configured.trim() === "all") return true;
+  return commaList(configured).includes(taskId);
 }
 
 /** Parse non-secret eval controls. Model credentials belong to the selected target. */

@@ -37,9 +37,9 @@ export WORKSHOP_EVAL_TRIALS=3
 export WORKSHOP_EVAL_GATING_TASKS='appointment-desk,expense-ledger'
 ```
 
-The defaults are both models, one trial, and the appointment and ledger evals gating the run. Set
-`WORKSHOP_EVAL_GATING_TASKS` to a comma-separated list to change that policy, or to an empty string
-for a reporting-only run.
+The defaults are both models, one trial, and every eval gating the run. Set
+`WORKSHOP_EVAL_GATING_TASKS` to a comma-separated subset, or to an empty string for a reporting-only
+run.
 
 A **trial** is one complete run of one eval with one model. `WORKSHOP_EVAL_TRIALS=3` repeats every
 model-and-eval pair three times. With three evals and two models, that produces 18 trials. The manual

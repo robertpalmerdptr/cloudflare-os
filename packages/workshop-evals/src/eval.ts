@@ -1,24 +1,27 @@
 import { createJudge, describeEval } from "vitest-evals";
 import { expect } from "vitest";
-import { evalGatingTasks, evalMatrix, resolveEvalCommits } from "./config.js";
+import { evalGatesTask, evalMatrix, resolveEvalCommits } from "./config.js";
 import { createWorkshopHarness } from "./harness.js";
 import { taskVersion, type EvalRunInput, type EvalRunOutput, type EvalTask } from "./task.js";
 import { resolveWorkshopTarget } from "./target.js";
 
 const evalCommits = resolveEvalCommits();
-const gatingTasks = evalGatingTasks();
 
 const ChecksJudge = createJudge<EvalRunInput, EvalRunOutput>(
   "behavioral checks",
   ({ output }) => {
     const checks = output.turns.flatMap(turn => turn.checks);
-    const passed = checks.filter(check => check.pass).length;
+    const failed = checks.filter(check => !check.pass);
+    const passed = checks.length - failed.length;
     return {
       score: checks.length === 0 ? 0 : passed / checks.length,
       metadata: {
+        rationale: failed.length === 0
+          ? "All checks passed"
+          : `Failed checks: ${failed.map(check => check.id).join(", ")}`,
         passed,
         total: checks.length,
-        failed: checks.filter(check => !check.pass).map(check => check.id),
+        failed: failed.map(check => check.id),
       },
     };
   },
@@ -34,7 +37,7 @@ export function defineTaskEval(task: EvalTask): void {
       model,
       trial,
     })));
-  const gatesRun = gatingTasks.has(task.id);
+  const gatesRun = evalGatesTask(task.id);
   const identity = {
     ...evalCommits,
     taskVersion: taskVersion(task),

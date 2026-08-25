@@ -6,8 +6,8 @@ on:
       models:
         description: Comma-separated Workshop model IDs; blank uses the suite defaults
       gatingTasks:
-        description: Comma-separated eval IDs that should fail the run; default uses suite policy
-        default: "default"
+        description: Comma-separated eval IDs that should fail the run; blank reports only
+        default: "all"
         required: true
       trials:
         description: Repetitions per task and model

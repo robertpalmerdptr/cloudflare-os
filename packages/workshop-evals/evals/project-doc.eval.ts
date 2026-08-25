@@ -34,9 +34,6 @@ function text(document: Document): string {
  * Docs are a standard platform output. The system prompt advertises the shipped blueprint, and a
  * real Doc appears on the outputs page and supports the collaborative Docs RPC. A custom notes
  * Gadget lacks both properties.
- *
- * No current-main baseline shows this task passing every check, so the default run policy leaves it
- * non-gating. Add it to the gating set once a repeated baseline establishes that result.
  */
 const task = defineEvalTask({
   id: "project-doc",
