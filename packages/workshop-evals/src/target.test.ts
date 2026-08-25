@@ -13,6 +13,13 @@ describe("resolveWorkshopTarget", () => {
     });
   });
 
+  it("rejects an Access-authenticated HTTP preview", () => {
+    expect(() => resolveWorkshopTarget({
+      WORKSHOP_EVAL_TARGET: "http://preview.example.com",
+      CF_ACCESS_TOKEN: "access-token",
+    })).toThrow("HTTPS");
+  });
+
   it("requires an Access token for a preview", () => {
     expect(() => resolveWorkshopTarget({
       WORKSHOP_EVAL_TARGET: "https://preview.example.com",

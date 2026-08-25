@@ -11,6 +11,7 @@ import { fileURLToPath } from "node:url";
 import { parse } from "jsonc-parser";
 import { createTestHarness, type TestHarness } from "wrangler";
 import { z } from "zod";
+import { cleanupFailure, type Deadline } from "./deadline.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 
@@ -126,6 +127,8 @@ export type Harness = {
 export type HarnessOptions = {
   /** Retain the Workshop's checked-in Worker Loader so agents and Gadgets can execute code. */
   enableGadgetExecution?: boolean;
+  /** Optional absolute deadline for starting the out-of-process server. */
+  deadline?: Deadline;
   gatekeepers: GatekeeperSpec[];
   patchWorkshop?: (config: WorkerConfig) => void;
   /** Defaults to this repo's root. Override when a gatekeeper lives outside it. */
@@ -151,7 +154,21 @@ export async function startHarness(opts: HarnessOptions): Promise<Harness> {
     ],
   });
 
-  const { url } = await server.listen();
+  let url: URL;
+  try {
+    const listening = () => server.listen();
+    ({ url } = opts.deadline === undefined
+      ? await listening()
+      : await opts.deadline.run("starting the local Workshop", listening));
+  } catch (error) {
+    try {
+      await server.close();
+    } catch (cleanupError) {
+      throw cleanupFailure(
+          error, cleanupError, "Workshop startup failed, and server cleanup also failed");
+    }
+    throw error;
+  }
   return {
     server,
     url,

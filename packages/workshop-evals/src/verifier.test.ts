@@ -1,5 +1,6 @@
 import type { WorkpieceSummary } from "@gadgets/workshop-shared/api";
-import { describe, expect, it } from "vitest";
+import { Deadline } from "@gadgets/integration-tests/deadline";
+import { describe, expect, it, vi } from "vitest";
 import { EvalVerifier, resolveGadget, type VerifierSession } from "./verifier.js";
 import type { EvalCheck } from "./task.js";
 
@@ -13,8 +14,9 @@ function gadget(id: number, title: string): WorkpieceSummary {
 
 function collect(
     verify: (verifier: EvalVerifier) => Promise<void>,
-    workpieces: readonly WorkpieceSummary[] = []): Promise<EvalCheck[]> {
-  return new EvalVerifier(unusedSession, workpieces).collect(verify);
+    workpieces: readonly WorkpieceSummary[] = [],
+    deadline?: Deadline): Promise<EvalCheck[]> {
+  return new EvalVerifier(unusedSession, workpieces, deadline).collect(verify);
 }
 
 describe("resolveGadget", () => {
@@ -82,6 +84,23 @@ describe("EvalVerifier", () => {
         return { pass: true };
       });
     })).toEqual([{ id: "forgotten", pass: true }]);
+  });
+
+  it("fails a check that outlives the trial deadline", async () => {
+    vi.useFakeTimers();
+    const result = collect(async verifier => {
+      await verifier.check("stuck", () => new Promise<never>(() => {}));
+    }, [], Deadline.after(25));
+    const assertion = expect(result).resolves.toEqual([{
+      id: "stuck",
+      pass: false,
+      evidence: "Timed out waiting for eval check stuck",
+    }]);
+
+    await vi.advanceTimersByTimeAsync(25);
+
+    await assertion;
+    vi.useRealTimers();
   });
 
   it("marks evidence it could not represent instead of dropping it", async () => {

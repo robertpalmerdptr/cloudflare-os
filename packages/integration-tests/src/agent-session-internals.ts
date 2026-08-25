@@ -1,37 +1,30 @@
-import type { AiChatHistoryPage, AiChatMessage, AiChatMetadata } from "@gadgets/workshop-shared/api";
+import type { AiChatHistoryPage, AiChatMessage } from "@gadgets/workshop-shared/api";
 
 
 export class AgentTurnCompletion {
   readonly promise: Promise<void>;
-  lastMetadata: AiChatMetadata | undefined;
   #chatId: number | null;
   #resolve: () => void = () => {};
   #reject: (error: Error) => void = () => {};
   #stopAgent: () => Promise<void>;
-  #settleDebounceMs: number;
-  #hardTimeout: ReturnType<typeof setTimeout> | undefined;
-  #idleTimer: ReturnType<typeof setTimeout> | undefined;
+  #hardTimeout: ReturnType<typeof setTimeout>;
   #signal: AbortSignal | undefined;
-  #sawActive = false;
   #isSettled = false;
   #stopRequested = false;
-  #pendingMetadata: AiChatMetadata[] = [];
+  #following = false;
 
   constructor(
       chatId: number | null,
       stopAgent: () => Promise<void>,
       timeoutMs: number,
-      settleDebounceMs: number,
       signal?: AbortSignal) {
     this.#chatId = chatId;
     this.#stopAgent = stopAgent;
-    this.#settleDebounceMs = settleDebounceMs;
     this.#signal = signal;
     this.promise = new Promise<void>((resolve, reject) => {
       this.#resolve = resolve;
       this.#reject = error => reject(error);
     });
-    // Mark the promise handled while the RPC that reveals a new chat ID is still in flight.
     this.promise.catch(() => {});
     this.#hardTimeout = setTimeout(() => {
       this.#stopRequested = true;
@@ -51,30 +44,16 @@ export class AgentTurnCompletion {
       throw new Error(`Agent turn is already attached to chat ${this.#chatId}`);
     }
     this.#chatId = chatId;
-    const metadata = this.#pendingMetadata;
-    this.#pendingMetadata = [];
-    for (const entry of metadata) this.metadata(entry);
     if (this.#stopRequested) this.#requestStop();
   }
 
-  metadata(chat: AiChatMetadata): void {
-    if (this.#chatId === null) {
-      this.#pendingMetadata.push(chat);
-      return;
-    }
-    if (chat.id !== this.#chatId) return;
-    this.lastMetadata = chat;
-    if (this.#isSettled) {
-      if (chat.activeAgent && this.#stopRequested) this.#requestStop();
-      return;
-    }
-    if (chat.activeAgent) {
-      this.#sawActive = true;
-      this.#clearIdleTimer();
-    } else if (this.#sawActive) {
-      this.#clearIdleTimer();
-      this.#idleTimer = setTimeout(() => this.#succeed(), this.#settleDebounceMs);
-    }
+
+  follow(serverCompletion: PromiseLike<void>): void {
+    if (this.#following) throw new Error("Agent turn completion is already being followed");
+    this.#following = true;
+    Promise.resolve(serverCompletion).then(
+        () => this.#succeed(),
+        error => this.#fail(error instanceof Error ? error : new Error(String(error))));
   }
 
   cancel(): void {
@@ -85,7 +64,7 @@ export class AgentTurnCompletion {
   }
 
   dispose(): void {
-    this.#clearTimers();
+    clearTimeout(this.#hardTimeout);
     this.#signal?.removeEventListener("abort", this.#onAbort);
   }
 
@@ -109,17 +88,6 @@ export class AgentTurnCompletion {
     this.#isSettled = true;
     this.dispose();
     this.#reject(error);
-  }
-
-  #clearIdleTimer(): void {
-    if (this.#idleTimer !== undefined) clearTimeout(this.#idleTimer);
-    this.#idleTimer = undefined;
-  }
-
-  #clearTimers(): void {
-    this.#clearIdleTimer();
-    if (this.#hardTimeout !== undefined) clearTimeout(this.#hardTimeout);
-    this.#hardTimeout = undefined;
   }
 }
 

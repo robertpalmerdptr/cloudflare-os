@@ -1,4 +1,5 @@
 import type { RpcCompatible, RpcStub } from "capnweb";
+import { Deadline } from "@gadgets/integration-tests/deadline";
 import type { AgentSession } from "@gadgets/integration-tests/agent-session";
 import type { WorkpieceId, WorkpieceSummary } from "@gadgets/workshop-shared/api";
 import { toJsonValue } from "vitest-evals";
@@ -55,11 +56,16 @@ export class EvalVerifier {
   readonly workpieces: readonly WorkpieceSummary[];
   readonly #session: VerifierSession;
   readonly #checks: EvalCheck[] = [];
+  readonly #deadline: Deadline;
   readonly #pending: Promise<void>[] = [];
 
-  constructor(session: VerifierSession, workpieces: readonly WorkpieceSummary[]) {
+  constructor(
+      session: VerifierSession,
+      workpieces: readonly WorkpieceSummary[],
+      deadline = Deadline.none()) {
     this.#session = session;
     this.workpieces = workpieces;
+    this.#deadline = deadline;
   }
 
   /**
@@ -79,7 +85,7 @@ export class EvalVerifier {
 
   async #run(index: number, id: string, body: () => Promise<EvalCheckOutcome>): Promise<void> {
     try {
-      const outcome = await body();
+      const outcome = await this.#deadline.run(`eval check ${id}`, body);
       const evidence = outcome.evidence === undefined
         ? undefined
         : toJsonValue(outcome.evidence) ?? UNSERIALIZABLE_EVIDENCE;
@@ -96,7 +102,8 @@ export class EvalVerifier {
    * owns the stub, so bind it with `using`. Throws when no Gadget matches, or when several do.
    */
   connect<Session extends RpcCompatible<Session>>(gadgetTitle: string): Promise<RpcStub<Session>> {
-    return connectTyped<Session>(this.#session, resolveGadget(this.workpieces, gadgetTitle));
+    return this.#deadline.run("connecting to the generated Gadget", () =>
+      connectTyped<Session>(this.#session, resolveGadget(this.workpieces, gadgetTitle)));
   }
 
   /**

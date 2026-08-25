@@ -97,3 +97,4 @@ jobs:
           publish-check: true
           check-name: Workshop evals
           fail-on-failures: true
+          soft-fail: false

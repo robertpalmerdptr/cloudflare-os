@@ -1,7 +1,9 @@
 import { AgentSession, type AgentSessionOptions } from "@gadgets/integration-tests/agent-session";
+import { cleanupFailure, Deadline } from "@gadgets/integration-tests/deadline";
 import {
-  startHarness, type HarnessOptions, type WorkerConfig,
+  startHarness, type Harness, type HarnessOptions, type WorkerConfig,
 } from "@gadgets/integration-tests/harness";
+import { NetworkInterceptor } from "@gadgets/integration-tests/network-interceptor";
 
 /** Existing credentials used to run models from a local workerd Workshop. */
 type LocalModelAccess = {
@@ -39,10 +41,10 @@ export function resolveWorkshopTarget(
     try {
       url = new URL(configuredTarget);
     } catch {
-      throw new Error("WORKSHOP_EVAL_TARGET must be local or an absolute HTTP(S) URL");
+      throw new Error("WORKSHOP_EVAL_TARGET must be local or an absolute HTTPS URL");
     }
-    if (url.protocol !== "https:" && url.protocol !== "http:") {
-      throw new Error("WORKSHOP_EVAL_TARGET must be local or an absolute HTTP(S) URL");
+    if (url.protocol !== "https:") {
+      throw new Error("WORKSHOP_EVAL_TARGET previews require HTTPS");
     }
     const accessToken = value(environment, "CF_ACCESS_TOKEN");
     if (accessToken === undefined) {
@@ -94,20 +96,60 @@ function configureGateway(config: WorkerConfig, access: Extract<LocalModelAccess
   };
 }
 
+function allowsModelEgress(access: LocalModelAccess, url: URL): boolean {
+  const account = encodeURIComponent(access.accountId);
+  if (access.kind === "gateway") {
+    const gateway = encodeURIComponent(access.gateway);
+    const inferencePrefix = `/v1/${account}/${gateway}/`;
+    const logPrefix = `/client/v4/accounts/${account}/ai-gateway/gateways/${gateway}/logs/`;
+    return (url.origin === "https://gateway.ai.cloudflare.com" &&
+            url.pathname.startsWith(inferencePrefix)) ||
+      (url.origin === "https://api.cloudflare.com" && url.pathname.startsWith(logPrefix));
+  }
+  const inferencePrefix = `/client/v4/accounts/${account}/ai/v1`;
+  return url.origin === "https://api.cloudflare.com" &&
+    url.pathname.startsWith(inferencePrefix);
+}
+
+function denyUnexpectedEgress(): Response {
+  return new Response("External network access is disabled during this eval.", { status: 403 });
+}
+
+async function closeLocalTarget(
+    harness: Harness,
+    interceptor: NetworkInterceptor,
+    deadline: Deadline,
+    session?: AgentSession): Promise<void> {
+  session?.[Symbol.dispose]();
+  const errors: unknown[] = [];
+  try {
+    await deadline.run("closing the local Workshop", () => harness.server.close());
+  } catch (error) {
+    errors.push(error);
+  } finally {
+    interceptor.uninstall();
+  }
+  const unmockedCalls = interceptor.getUnmockedCalls();
+  if (unmockedCalls.length > 0) {
+    errors.push(new Error(`Unexpected eval egress: ${unmockedCalls.join(", ")}`));
+  }
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, "Local Workshop cleanup failed");
+}
+
 /** Open one isolated trial against local workerd or a deployed Access preview. */
 export async function openWorkshopTarget(
-    target: WorkshopTarget, model: string, timeoutMs: number) {
+    target: WorkshopTarget, model: string, runDeadline: Deadline, cleanupTimeoutMs: number) {
   if (target.kind === "preview") {
     const session = await AgentSession.create(target.url, {
       accessToken: target.accessToken,
       modelId: model,
-      timeoutMs,
-    });
+    }, runDeadline, cleanupTimeoutMs);
     return {
       session,
-      [Symbol.asyncDispose]: async () => {
+      close: async () => {
         try {
-          await session.deleteWorkspace();
+          await session.deleteWorkspace(Deadline.after(cleanupTimeoutMs));
         } finally {
           session[Symbol.dispose]();
         }
@@ -119,11 +161,12 @@ export async function openWorkshopTarget(
   const harnessOptions: HarnessOptions = {
     gatekeepers: [],
     enableGadgetExecution: true,
+    deadline: runDeadline,
   };
   if (modelAccess.kind === "gateway") {
     harnessOptions.patchWorkshop = config => configureGateway(config, modelAccess);
   }
-  const sessionOptions: AgentSessionOptions = { modelId: model, timeoutMs };
+  const sessionOptions: AgentSessionOptions = { modelId: model };
   if (modelAccess.kind === "direct") {
     sessionOptions.userModel = {
       profile: { type: "agent", id: model, name: model },
@@ -136,18 +179,32 @@ export async function openWorkshopTarget(
     };
   }
 
-  const harness = await startHarness(harnessOptions);
+  const interceptor = new NetworkInterceptor(
+      [denyUnexpectedEgress], url => allowsModelEgress(modelAccess, url));
+  interceptor.install();
+  let harness: Harness;
   try {
-    const session = await AgentSession.create(harness.url, sessionOptions);
+    harness = await startHarness(harnessOptions);
+  } catch (error) {
+    interceptor.uninstall();
+    throw error;
+  }
+  try {
+    const session = await AgentSession.create(
+        harness.url, sessionOptions, runDeadline, cleanupTimeoutMs);
     return {
       session,
-      [Symbol.asyncDispose]: async () => {
-        session[Symbol.dispose]();
-        await harness.server.close();
-      },
+      close: () => closeLocalTarget(
+          harness, interceptor, Deadline.after(cleanupTimeoutMs), session),
     };
   } catch (error) {
-    await harness.server.close();
+    try {
+      await closeLocalTarget(
+          harness, interceptor, Deadline.after(cleanupTimeoutMs));
+    } catch (cleanupError) {
+      throw cleanupFailure(
+          error, cleanupError, "Opening the Workshop failed, and cleanup also failed");
+    }
     throw error;
   }
 }

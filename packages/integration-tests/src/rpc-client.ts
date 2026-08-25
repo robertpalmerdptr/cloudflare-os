@@ -56,6 +56,9 @@ export type WorkshopConnectionOptions = {
 /** Open an RPC session against the Workshop's /api endpoint. */
 export function connect(
     baseUrl: URL, options: WorkshopConnectionOptions = {}): RpcStub<PublicApi> {
+  if (options.accessToken !== undefined && baseUrl.protocol !== "https:") {
+    throw new Error("Access-authenticated Workshop connections require HTTPS");
+  }
   const wsUrl = new URL("/api", baseUrl);
   wsUrl.protocol = wsUrl.protocol === "https:" ? "wss:" : "ws:";
   if (options.accessToken === undefined) {

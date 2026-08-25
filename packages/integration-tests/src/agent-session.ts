@@ -1,15 +1,13 @@
 import type { RpcCompatible, RpcStub } from "capnweb";
 import type {
-  AiChatMessage, AiChatMetadata, AiChatStreamEvent, AiChatSubscriber, AiChatAuthorInfo, AiModelConfig,
-  AuthenticatedApi, GadgetClient, Overseer, PublicApi, WorkpieceId,
-  WorkpieceSummary, WorkpiecesSubscriber,
+  AiChatMessage, AiChatAuthorInfo, AiModelConfig, AuthenticatedApi, GadgetClient, Overseer, PublicApi,
+  WorkpieceId, WorkpieceSummary, WorkpiecesSubscriber,
 } from "@gadgets/workshop-shared/api";
-import type { CodeChange } from "@gadgets/workshop-shared/code-change";
 import { AgentTurnCompletion, loadAllChatHistory } from "./agent-session-internals.js";
+import { cleanupFailure, Deadline } from "./deadline.js";
 import { RpcTarget, connect, nextUsernames, signUp, stubFor, waitFor } from "./rpc-client.js";
 
 const DEFAULT_TIMEOUT_MS = 120_000;
-const DEFAULT_SETTLE_DEBOUNCE_MS = 500;
 
 function connectTyped<Session extends RpcCompatible<Session>>(
     gadget: RpcStub<GadgetClient>, chatId: number): Promise<RpcStub<Session>>;
@@ -35,22 +33,15 @@ export type AgentTurnResult = {
   history: AiChatMessage[];
   /** Workpieces known when the turn finished. */
   workpieces: WorkpieceSummary[];
-  /** Provider usage available from chat metadata after this turn. */
-  usage: { totalTokens?: number; costUsd?: number };
+  /** Usage scoped exactly as described by the field names. */
+  usage: {
+    lastStepTokens?: number;
+    agentChatCostUsd?: number;
+    titleTokens?: number;
+    titleCostUsd?: number;
+  };
 };
 
-class ChatSubscriber extends RpcTarget implements AiChatSubscriber {
-  completion: AgentTurnCompletion | undefined;
-
-  streamGeneration(_generation: number): void {}
-  metadata(chat: AiChatMetadata): void { this.completion?.metadata(chat); }
-  deleted(_chatId: number): void {}
-  message(_entry: AiChatMessage): void {}
-  changeApplied(
-      _chatId: number, _generation: number, _revision: number, _author: AiChatAuthorInfo,
-      _change: CodeChange, _submission?: {clientId: string; seq: number}): void {}
-  stream(_chatId: number, _event: AiChatStreamEvent): void {}
-}
 
 class WorkpieceSubscriber extends RpcTarget implements WorkpiecesSubscriber {
   readonly entries = new Map<WorkpieceId, WorkpieceSummary>();
@@ -79,9 +70,6 @@ export class AgentSession implements Disposable {
   #publicApi: RpcStub<PublicApi>;
   #authenticatedApi: RpcStub<AuthenticatedApi>;
   #overseer: RpcStub<Overseer>;
-  #chatSubscriber = new ChatSubscriber();
-  #chatSubscriberStub: RpcStub<ChatSubscriber> | undefined;
-  #chatSubscription: RpcStub<{}> | undefined;
   #workpieceSubscriber = new WorkpieceSubscriber();
   #workpieceSubscriberStub: RpcStub<WorkpieceSubscriber> | undefined;
   #workpieceSubscription: RpcStub<{}> | undefined;
@@ -105,41 +93,69 @@ export class AgentSession implements Disposable {
   }
 
   /** Create a fresh account, finish first-time model setup, and open an isolated workspace. */
-  static async create(baseUrl: URL, options: AgentSessionOptions = {}): Promise<AgentSession> {
+  static async create(
+      baseUrl: URL,
+      options: AgentSessionOptions = {},
+      deadline = Deadline.after(options.timeoutMs ?? DEFAULT_TIMEOUT_MS),
+      cleanupTimeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS): Promise<AgentSession> {
     const publicApi = connect(baseUrl, { accessToken: options.accessToken });
     let authenticatedApi: RpcStub<AuthenticatedApi> | undefined;
     let overseer: RpcStub<Overseer> | undefined;
     let session: AgentSession | undefined;
     try {
+      let authenticated: RpcStub<AuthenticatedApi>;
       if (options.accessToken === undefined) {
         const username = nextUsernames("agent").at(0);
         if (username === undefined) throw new Error("Failed to allocate an integration-test username");
-        authenticatedApi = await signUp(publicApi, username);
+        authenticated = await deadline.run(
+            "creating the eval account", () => signUp(publicApi, username));
       } else {
-        authenticatedApi = await publicApi.authenticateFromCfAccess();
+        authenticated = await deadline.run(
+            "authenticating the preview account", () => publicApi.authenticateFromCfAccess());
       }
-      if (options.userModel !== undefined) {
-        await authenticatedApi.addModel(options.userModel.profile, options.userModel.config);
+      authenticatedApi = authenticated;
+
+      const userModel = options.userModel;
+      if (userModel !== undefined) {
+        await deadline.run("adding the eval model", () =>
+          authenticated.addModel(userModel.profile, userModel.config));
       }
-      const modelId = AgentSession.#selectModel(await authenticatedApi.listModels(), options.modelId);
-      if (!await authenticatedApi.isOnboardingCompleted()) {
-        await authenticatedApi.setPreferredModel(modelId);
-        await authenticatedApi.completeOnboarding();
+      const models = await deadline.run("listing eval models", () => authenticated.listModels());
+      const modelId = AgentSession.#selectModel(models, options.modelId);
+      const onboardingCompleted = await deadline.run(
+          "reading onboarding state", () => authenticated.isOnboardingCompleted());
+      if (!onboardingCompleted) {
+        await deadline.run(
+            "selecting the eval model", () => authenticated.setPreferredModel(modelId));
+        await deadline.run(
+            "completing eval onboarding", () => authenticated.completeOnboarding());
       }
-      overseer = await authenticatedApi.newGadget();
-      session = new AgentSession(
-          publicApi, authenticatedApi, overseer, modelId,
+      const workspace = await deadline.run(
+          "creating the eval workspace", () => authenticated.newGadget());
+      overseer = workspace;
+      const createdSession = new AgentSession(
+          publicApi, authenticated, workspace, modelId,
           options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
-      await session.#initializeSubscriptions();
-      await session.#waitForOutputFormats();
-      return session;
+      session = createdSession;
+      await deadline.run(
+          "subscribing to the eval workspace", () => createdSession.#initializeWorkpieces());
+      await deadline.run(
+          "output formats", () => createdSession.#waitForOutputFormats());
+      return createdSession;
     } catch (error) {
       if (session === undefined) {
         overseer?.[Symbol.dispose]();
         authenticatedApi?.[Symbol.dispose]();
         publicApi[Symbol.dispose]();
       } else {
-        session[Symbol.dispose]();
+        try {
+          await session.deleteWorkspace(Deadline.after(cleanupTimeoutMs));
+        } catch (cleanupError) {
+          throw cleanupFailure(
+              error, cleanupError, "Opening the agent session failed, and cleanup also failed");
+        } finally {
+          session[Symbol.dispose]();
+        }
       }
       throw error;
     }
@@ -149,7 +165,10 @@ export class AgentSession implements Disposable {
    * Send a prompt. The first call creates a chat; later calls continue that same chat.
    * History is fetched through every compaction page after the turn settles.
    */
-  async run(prompt: string, signal?: AbortSignal): Promise<AgentTurnResult> {
+  async run(
+      prompt: string,
+      signal?: AbortSignal,
+      deadline = Deadline.after(this.#timeoutMs)): Promise<AgentTurnResult> {
     this.#assertUsable();
     if (this.#turn !== undefined) throw new Error("An agent turn is already running");
 
@@ -157,28 +176,36 @@ export class AgentSession implements Disposable {
     const completion = new AgentTurnCompletion(
         existingChatId,
         () => this.#stopCurrentAgent(),
-        this.#timeoutMs,
-        DEFAULT_SETTLE_DEBOUNCE_MS,
+        deadline.remainingMs,
         signal);
     this.#turn = completion;
-    this.#chatSubscriber.completion = completion;
     try {
-      if (this.#chatId === undefined) {
-        this.#chatId = await this.#overseer.newChat(prompt, this.#modelId);
-        completion.attach(this.#chatId);
+      let chatId = this.#chatId;
+      if (chatId === undefined) {
+        chatId = await deadline.run(
+            "the agent turn to start", () => this.#overseer.newChat(prompt, this.#modelId));
+        this.#chatId = chatId;
+        completion.attach(chatId);
       } else {
-        await this.#overseer.sendChatMessage(this.#chatId, prompt, this.#modelId);
+        const continuedChatId = chatId;
+        await deadline.run(
+            "the agent turn RPC",
+            () => this.#overseer.sendChatMessage(continuedChatId, prompt, this.#modelId));
       }
+      completion.follow(this.#overseer.waitForAgentTurn(chatId));
       await completion.promise;
 
-      const history = await this.#loadHistory(this.#chatId);
+      const [history, chats] = await deadline.run("loading final chat state", () => Promise.all([
+        this.#loadHistory(chatId),
+        this.#overseer.listChats(),
+      ]));
+      const metadata = chats.find(chat => chat.id === chatId);
+      if (metadata === undefined) throw new Error(`Chat ${chatId} disappeared after its agent turn`);
       const usage: AgentTurnResult["usage"] = {};
-      if (completion.lastMetadata?.totalTokens !== undefined) {
-        usage.totalTokens = completion.lastMetadata.totalTokens;
-      }
-      if (completion.lastMetadata?.totalCost !== undefined) {
-        usage.costUsd = completion.lastMetadata.totalCost;
-      }
+      if (metadata.totalTokens !== undefined) usage.lastStepTokens = metadata.totalTokens;
+      if (metadata.titleTokens !== undefined) usage.titleTokens = metadata.titleTokens;
+      if (metadata.titleCost !== undefined) usage.titleCostUsd = metadata.titleCost;
+      if (metadata.totalCost !== undefined) usage.agentChatCostUsd = metadata.totalCost;
       return {
         history,
         workpieces: [...this.#workpieceSubscriber.entries.values()],
@@ -189,9 +216,6 @@ export class AgentSession implements Disposable {
       throw error;
     } finally {
       completion.dispose();
-      if (this.#chatSubscriber.completion === completion) {
-        this.#chatSubscriber.completion = undefined;
-      }
       if (this.#turn === completion) this.#turn = undefined;
     }
   }
@@ -213,11 +237,11 @@ export class AgentSession implements Disposable {
     });
   }
 
-  /** Delete the isolated workspace, then dispose every capability held by the session. */
-  async deleteWorkspace(): Promise<void> {
-    this.#assertUsable();
+  /** Delete the isolated workspace, including after a failed turn. */
+  async deleteWorkspace(deadline = Deadline.after(this.#timeoutMs)): Promise<void> {
+    if (this.#disposed) throw new Error("AgentSession is disposed");
     if (this.#turn !== undefined) throw new Error("Cannot delete the workspace during an agent turn");
-    await this.#overseer.deleteSelf();
+    await deadline.run("deleting the eval workspace", () => this.#overseer.deleteSelf());
     this[Symbol.dispose]();
   }
 
@@ -227,18 +251,14 @@ export class AgentSession implements Disposable {
     this.#disposed = true;
     this.#turn?.cancel();
     this.#turn?.dispose();
-    this.#chatSubscription?.[Symbol.dispose]();
     this.#workpieceSubscription?.[Symbol.dispose]();
-    this.#chatSubscriberStub?.[Symbol.dispose]();
     this.#workpieceSubscriberStub?.[Symbol.dispose]();
     this.#overseer[Symbol.dispose]();
     this.#authenticatedApi[Symbol.dispose]();
     this.#publicApi[Symbol.dispose]();
   }
 
-  async #initializeSubscriptions(): Promise<void> {
-    this.#chatSubscriberStub = stubFor(this.#chatSubscriber);
-    this.#chatSubscription = await this.#overseer.subscribeToChat(this.#chatSubscriberStub);
+  async #initializeWorkpieces(): Promise<void> {
     this.#workpieceSubscriberStub = stubFor(this.#workpieceSubscriber);
     this.#workpieceSubscription = await this.#overseer.subscribeToWorkpieces(
         this.#workpieceSubscriberStub);

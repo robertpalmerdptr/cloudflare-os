@@ -6,7 +6,7 @@ function commaList(value: string): string[] {
   return value.split(",").map(item => item.trim()).filter(Boolean);
 }
 
-/** Time reserved for non-agent work inside a run and for cleanup outside it. */
+/** Maximum time allowed for cleanup after the run deadline. */
 export const EVAL_OVERHEAD_BUDGET_MS = 2 * 60_000;
 /** Budget shared by all agent turns and verification inside one trial. */
 export const EVAL_RUN_BUDGET_MS = 30 * 60_000;

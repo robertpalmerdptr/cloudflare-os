@@ -1,18 +1,13 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AiChatHistoryPage, AiChatMessage, AiChatMetadata }
-  from "@gadgets/workshop-shared/api";
+import type { AiChatHistoryPage, AiChatMessage } from "@gadgets/workshop-shared/api";
 import { AgentTurnCompletion, loadAllChatHistory } from "../src/agent-session-internals.js";
 
-function metadata(active: boolean): AiChatMetadata {
-  const result: AiChatMetadata = {
-    id: 7,
-    title: "test",
-    started: new Date(0),
-    lastActive: new Date(0),
-  };
-  if (active) result.activeAgent = { type: "agent", id: "model", name: "Model" };
-  return result;
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>(settle => { resolve = settle; });
+  return { promise, resolve };
 }
+
 
 function message(sequence: number): AiChatMessage {
   return {
@@ -30,49 +25,23 @@ afterEach(() => {
 });
 
 describe("AgentTurnCompletion", () => {
-  it("settles after active becomes idle for the debounce period", async () => {
-    vi.useFakeTimers();
-    const completion = new AgentTurnCompletion(7, () => Promise.resolve(), 1_000, 25);
-    completion.metadata(metadata(true));
-    completion.metadata(metadata(false));
-
-    await vi.advanceTimersByTimeAsync(24);
+  it("settles only when the server reports the complete callback chain", async () => {
+    const serverCompletion = deferred<void>();
+    const completion = new AgentTurnCompletion(7, () => Promise.resolve(), 1_000);
+    completion.follow(serverCompletion.promise);
     expect(completion.settled).toBe(false);
-    await vi.advanceTimersByTimeAsync(1);
+
+    serverCompletion.resolve();
+
     await expect(completion.promise).resolves.toBeUndefined();
   });
 
-  it("retains the final chat usage metadata", async () => {
-    vi.useFakeTimers();
-    const completion = new AgentTurnCompletion(7, () => Promise.resolve(), 1_000, 25);
-    completion.metadata(metadata(true));
-    completion.metadata({ ...metadata(false), totalTokens: 123, totalCost: 0.45 });
-    await vi.advanceTimersByTimeAsync(25);
-    await completion.promise;
-
-    expect(completion.lastMetadata).toMatchObject({ totalTokens: 123, totalCost: 0.45 });
-  });
-
-  it("resets idle settlement when a callback restarts the agent", async () => {
-    vi.useFakeTimers();
-    const completion = new AgentTurnCompletion(7, () => Promise.resolve(), 1_000, 25);
-    completion.metadata(metadata(true));
-    completion.metadata(metadata(false));
-    await vi.advanceTimersByTimeAsync(20);
-    completion.metadata(metadata(true));
-    await vi.advanceTimersByTimeAsync(20);
-    expect(completion.settled).toBe(false);
-
-    completion.metadata(metadata(false));
-    await vi.advanceTimersByTimeAsync(25);
-    await expect(completion.promise).resolves.toBeUndefined();
-  });
 
   it("stops the agent on timeout", async () => {
     vi.useFakeTimers();
     let stops = 0;
     const completion = new AgentTurnCompletion(
-        7, () => { stops++; return Promise.resolve(); }, 100, 25);
+        7, () => { stops++; return Promise.resolve(); }, 100);
     await vi.advanceTimersByTimeAsync(100);
 
     await expect(completion.promise).rejects.toThrow("Timed out after 100ms");
@@ -83,7 +52,7 @@ describe("AgentTurnCompletion", () => {
     let stops = 0;
     const controller = new AbortController();
     const completion = new AgentTurnCompletion(
-        7, () => { stops++; return Promise.resolve(); }, 1_000, 25, controller.signal);
+        7, () => { stops++; return Promise.resolve(); }, 1_000, controller.signal);
     controller.abort();
 
     await expect(completion.promise).rejects.toThrow("Agent turn was cancelled");
@@ -94,7 +63,7 @@ describe("AgentTurnCompletion", () => {
     vi.useFakeTimers();
     const controller = new AbortController();
     const completion = new AgentTurnCompletion(
-        7, () => Promise.resolve(), 1_000, 25, controller.signal);
+        7, () => Promise.resolve(), 1_000, controller.signal);
     completion.dispose();
     controller.abort();
     vi.runAllTimers();
