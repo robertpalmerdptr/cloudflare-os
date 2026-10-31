@@ -15,7 +15,7 @@ catalog:
   typescript: 7.0.2
   # Exact, not ranged: the transform has to stay on esbuild. Oxc does not lower the Stage-3
   # decorators capnweb-validate's `@validateRpc()` relies on (cloudflare/workers-sdk#12626).
-  vite: 7.3.6
+  vite: 7.3.7
   vite-plus: ^0.2.8
   vitest: ^4.1.10
   wrangler: ^4.119.0
@@ -31,6 +31,10 @@ overrides:
   # - @lezer/markdown is a deep transitive of @codemirror/lang-markdown.
   '@types/node': 26.1.0
   '@lezer/markdown': 1.6.4
+  basic-ftp: 6.2.1
+  nanoid: 3.3.18
+  seroval: 1.6.3
+  source-map-js: 1.2.2
 
 # Reject dependency versions published within this many minutes (24h), matching the
 # CI supply-chain policy so local installs can't commit a too-fresh lockfile.
